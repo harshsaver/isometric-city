@@ -30,7 +30,7 @@ import {
   BudgetIcon,
   SettingsIcon,
 } from './ui/Icons';
-import { USE_TILE_RENDERER, SPRITE_SHEET, getSpriteCoords } from '@/lib/renderConfig';
+import { USE_TILE_RENDERER, SPRITE_SHEET, getSpriteCoords, BUILDING_TO_SPRITE } from '@/lib/renderConfig';
 
 // Import shadcn components
 import { Button } from '@/components/ui/button';
@@ -1681,34 +1681,6 @@ function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile }: {
     return false;
   }
 
-  // Helper function to check if a tile is part of a building that needs parking lot (stadium, hospital, power_plant, industrial, commercial, space_program)
-  function isPartOfParkingLotBuilding(gridX: number, gridY: number): boolean {
-    const maxSize = 4; // Maximum building size (airport is 4x4)
-    const parkingLotBuildings: BuildingType[] = ['stadium', 'hospital', 'power_plant', 'space_program', 'factory_small', 'factory_medium', 'factory_large', 'warehouse', 'shop_small', 'shop_medium', 'office_low', 'office_high', 'mall'];
-    
-    for (let dy = 0; dy < maxSize; dy++) {
-      for (let dx = 0; dx < maxSize; dx++) {
-        const originX = gridX - dx;
-        const originY = gridY - dy;
-        
-        if (originX >= 0 && originX < gridSize && originY >= 0 && originY < gridSize) {
-          const originTile = grid[originY][originX];
-          
-          // Check if this is a parking lot building and if this tile is within its footprint
-          if (parkingLotBuildings.includes(originTile.building.type)) {
-            const buildingSize = getBuildingSize(originTile.building.type);
-            if (gridX >= originX && gridX < originX + buildingSize.width &&
-                gridY >= originY && gridY < originY + buildingSize.height) {
-              return true;
-            }
-          }
-        }
-      }
-    }
-    
-    return false;
-  }
-  
   // Draw isometric tile base
   function drawIsometricTile(ctx: CanvasRenderingContext2D, x: number, y: number, tile: Tile, highlight: boolean, currentZoom: number) {
     const w = TILE_WIDTH;
@@ -1733,14 +1705,8 @@ function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile }: {
     const isPartOfBuilding = tile.building.type === 'empty' && isPartOfMultiTileBuilding(tile.x, tile.y);
     const isBuilding = isDirectBuilding || isPartOfBuilding;
     
-    // Check if this tile is part of a parking lot building (stadium, hospital, power_plant, space_program, industrial, commercial)
-    const isParkingLot = (tile.building.type === 'stadium' || tile.building.type === 'hospital' || tile.building.type === 'power_plant' ||
-                          tile.building.type === 'space_program' ||
-                          tile.building.type === 'factory_small' || tile.building.type === 'factory_medium' || 
-                          tile.building.type === 'factory_large' || tile.building.type === 'warehouse' ||
-                          tile.building.type === 'shop_small' || tile.building.type === 'shop_medium' ||
-                          tile.building.type === 'office_low' || tile.building.type === 'office_high' || tile.building.type === 'mall') ||
-                         (tile.building.type === 'empty' && isPartOfParkingLotBuilding(tile.x, tile.y));
+    // ALL buildings get grey/concrete base tiles (except parks which stay green)
+    const hasGreyBase = isBuilding && !isPark;
     
     if (tile.building.type === 'water') {
       topColor = '#2563eb';
@@ -1757,18 +1723,12 @@ function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile }: {
       leftColor = '#3d6634';
       rightColor = '#5a8f4f';
       strokeColor = '#2d4a26';
-    } else if (isParkingLot) {
-      // Grey parking lot tiles for stadium, hospital, and power plant
+    } else if (hasGreyBase) {
+      // Grey/concrete base tiles for ALL buildings (except parks)
       topColor = '#6b7280';
       leftColor = '#4b5563';
       rightColor = '#9ca3af';
       strokeColor = '#374151';
-    } else if (isBuilding) {
-      // White tiles for all other buildings
-      topColor = '#ffffff';
-      leftColor = '#e5e5e5';
-      rightColor = '#f5f5f5';
-      strokeColor = '#cccccc';
     } else if (tile.zone === 'residential') {
       if (tile.building.type !== 'grass' && tile.building.type !== 'empty') {
         topColor = '#3d7c3f';
@@ -2033,169 +1993,188 @@ function CanvasIsometricGrid({ overlayMode, selectedTile, setSelectedTile }: {
       return;
     }
     
-    // Get building size to handle multi-tile buildings
-    const buildingSize = getBuildingSize(buildingType);
-    const isMultiTile = buildingSize.width > 1 || buildingSize.height > 1;
+    // Check if this building type has a sprite in the tile renderer
+    const hasTileSprite = USE_TILE_RENDERER && BUILDING_TO_SPRITE[buildingType];
     
-    // Calculate position for multi-tile buildings
-    // For multi-tile buildings, we need to position based on the frontmost tile
-    // so that all tiles appear below the building sprite
-    let drawPosX = x;
-    let drawPosY = y;
-    
-    if (isMultiTile) {
-      // For a building with size (width, height), the frontmost tile in isometric view is:
-      // gridX = tile.x + (width - 1)
-      // gridY = tile.y + (height - 1)
-      // This is the bottom-right tile that gets drawn last
-      const frontmostOffsetX = buildingSize.width - 1;
-      const frontmostOffsetY = buildingSize.height - 1;
-      
-      // Convert grid offset to screen offset using isometric transformation
-      // gridToScreen: screenX = (x - y) * (TILE_WIDTH / 2)
-      //               screenY = (x + y) * (TILE_HEIGHT / 2)
-      const screenOffsetX = (frontmostOffsetX - frontmostOffsetY) * (w / 2);
-      const screenOffsetY = (frontmostOffsetX + frontmostOffsetY) * (h / 2);
-      
-      // Position at the frontmost tile so all tiles appear below
-      drawPosX = x + screenOffsetX;
-      drawPosY = y + screenOffsetY;
-    }
-    
-    // Map building types to sprite keys (for tile renderer) and image sources
-    let spriteKey: string | null = null;
-    let imageSrc: string | null = null;
-    let sizeMultiplier = 1.8; // Default size for buildings
-    
-    if (buildingType === 'house_medium') {
-      spriteKey = 'house_medium';
-      imageSrc = BUILDING_IMAGES.house_medium;
-      sizeMultiplier = 1.26; // Scaled down 30% from 1.8
-    } else if (buildingType === 'house_small') {
-      spriteKey = 'house_small';
-      imageSrc = BUILDING_IMAGES.house_small;
-      sizeMultiplier = 1.26; // Scaled down 30% from 1.8
-    } else if (['apartment_low', 'apartment_high'].includes(buildingType)) {
-      spriteKey = 'residential';
-      imageSrc = BUILDING_IMAGES.residential;
-    } else if (buildingType === 'mansion') {
-      spriteKey = 'mansion';
-      imageSrc = BUILDING_IMAGES.mansion;
-    } else if (buildingType === 'shop_medium') {
-      spriteKey = 'shop_medium';
-      imageSrc = BUILDING_IMAGES.shop_medium;
-      sizeMultiplier = 1.44; // Scaled down 20% from 1.8
-    } else if (buildingType === 'shop_small') {
-      spriteKey = 'shop_small';
-      imageSrc = BUILDING_IMAGES.shop_small;
-      sizeMultiplier = 1.26; // Scaled down 30% from 1.8
-    } else if (['office_low', 'office_high', 'mall'].includes(buildingType)) {
-      spriteKey = 'commercial';
-      imageSrc = BUILDING_IMAGES.commercial;
-    } else if (buildingType === 'warehouse') {
-      spriteKey = 'warehouse';
-      imageSrc = BUILDING_IMAGES.warehouse;
-    } else if (['factory_small', 'factory_medium', 'factory_large'].includes(buildingType)) {
-      spriteKey = 'industrial';
-      imageSrc = BUILDING_IMAGES.industrial;
-    } else if (BUILDING_IMAGES[buildingType]) {
-      spriteKey = buildingType;
-      imageSrc = BUILDING_IMAGES[buildingType];
-      // Larger buildings need bigger sprites
-      if (buildingType === 'power_plant') sizeMultiplier = 2.25; // Scaled down 10% from 2.5
-      else if (buildingType === 'stadium') sizeMultiplier = 2.8; // Scaled down 20% from 3.5
-      else if (buildingType === 'space_program') sizeMultiplier = 2.94; // 3x3 building, scaled up 5% from 2.8
-      else if (buildingType === 'university') sizeMultiplier = 2.8;
-      else if (buildingType === 'hospital') sizeMultiplier = 2.25; // 2x2 building
-      else if (buildingType === 'school') sizeMultiplier = 2.25; // 2x2 building
-      else if (buildingType === 'fire_station') sizeMultiplier = 1.006; // Scaled down 10% from 1.118
-      else if (buildingType === 'police_station') sizeMultiplier = 1.35; // Scaled down 25% from 1.8
-      else if (buildingType === 'park') sizeMultiplier = 1.134; // Scaled down 40% total (30% + 10%) from 1.8
-      else if (buildingType === 'park_large') sizeMultiplier = 2.5; // Scaled up 30% from base, 3x3 large park
-      else if (buildingType === 'tennis') sizeMultiplier = 1.197; // Scaled down 5% from 1.26
-    }
-    
-    // Calculate destination dimensions and position
-    const imgHeight = w * sizeMultiplier;
-    // For tile renderer, sprites are square; for individual images, use aspect ratio
-    const imgWidth = USE_TILE_RENDERER ? imgHeight : (imageSrc && imageCache.has(imageSrc) ? imgHeight * (imageCache.get(imageSrc)!.width / imageCache.get(imageSrc)!.height) : imgHeight);
-    
-    // Calculate position to center building on tile
-    // For multi-tile buildings, position relative to frontmost tile so all tiles appear below
-    const drawX = drawPosX + w / 2 - imgWidth / 2;
-    // For multi-tile buildings, draw higher (lower Y) so it appears above all tiles
-    // The frontmost tile is drawn last, so we position relative to it
-    const baseY = isMultiTile ? drawPosY : y;
-    const footprintDepth = isMultiTile ? buildingSize.width + buildingSize.height - 2 : 0;
-    const verticalLift = footprintDepth > 0 ? footprintDepth * h * 0.3 : 0;
-    let drawY = baseY - imgHeight + h + imgHeight * 0.1 - verticalLift;
-    if (buildingType === 'power_plant') {
-      drawY += h * 0.35; // Lower the sprite slightly to sit closer to the ground
-    }
-    if (buildingType === 'school') {
-      drawY += h * 0.4; // Shift school downward
-    }
-    if (buildingType === 'stadium') {
-      drawY += h * 1.0; // Shift stadium down more
-    }
-    if (buildingType === 'space_program') {
-      drawY += h * 1.0; // Shift space program down more, same as stadium
-    }
-    if (buildingType === 'park_large') {
-      drawY += h * 1.1; // Shift large park down
-    }
-    if (buildingType === 'water_tower') {
-      drawY -= h * 0.1; // Shift water tower upward slightly
-    }
-    
-    if (USE_TILE_RENDERER && spriteKey) {
-      // Use sprite sheet rendering
+    if (hasTileSprite) {
+      // ===== TILE RENDERER PATH =====
+      // Handles both single-tile and multi-tile buildings
       const spriteSheet = imageCache.get(SPRITE_SHEET.src);
-      const coords = getSpriteCoords(spriteKey);
       
-      if (spriteSheet && coords) {
-        // Draw from sprite sheet using source coordinates
+      if (spriteSheet) {
+        // Use naturalWidth/naturalHeight for accurate source dimensions
+        const sheetWidth = spriteSheet.naturalWidth || spriteSheet.width;
+        const sheetHeight = spriteSheet.naturalHeight || spriteSheet.height;
+        
+        // getSpriteCoords handles building type to sprite key mapping
+        const coords = getSpriteCoords(buildingType, sheetWidth, sheetHeight);
+        
+        if (coords) {
+          // Get building size to handle multi-tile buildings
+          const buildingSize = getBuildingSize(buildingType);
+          const isMultiTile = buildingSize.width > 1 || buildingSize.height > 1;
+          
+          // Calculate draw position for multi-tile buildings
+          // Multi-tile buildings need to be positioned at the front-most corner
+          let drawPosX = x;
+          let drawPosY = y;
+          
+          if (isMultiTile) {
+            // Calculate offset to position sprite at the front-most visible corner
+            // In isometric view, the front-most corner is at (originX + width - 1, originY + height - 1)
+            const frontmostOffsetX = buildingSize.width - 1;
+            const frontmostOffsetY = buildingSize.height - 1;
+            const screenOffsetX = (frontmostOffsetX - frontmostOffsetY) * (w / 2);
+            const screenOffsetY = (frontmostOffsetX + frontmostOffsetY) * (h / 2);
+            drawPosX = x + screenOffsetX;
+            drawPosY = y + screenOffsetY;
+          }
+          
+          // Calculate destination size preserving aspect ratio of source sprite
+          // Scale factor: 1.2 base (reduced from 1.5 for ~20% smaller)
+          // Multi-tile buildings scale with their footprint
+          const scaleMultiplier = isMultiTile ? Math.max(buildingSize.width, buildingSize.height) : 1;
+          const destWidth = w * 1.2 * scaleMultiplier;
+          const aspectRatio = coords.sh / coords.sw;  // height/width ratio of source
+          const destHeight = destWidth * aspectRatio;
+          
+          // Position: center horizontally on tile/footprint, anchor bottom of sprite at tile bottom
+          const drawX = drawPosX + w / 2 - destWidth / 2;
+          
+          // Simple positioning: sprite bottom aligns with tile/footprint bottom
+          // Add vertical push to compensate for transparent space at bottom of sprites
+          let drawY: number;
+          let verticalPush: number;
+          if (isMultiTile) {
+            // Multi-tile sprites need larger push to sit on their footprint
+            const footprintDepth = buildingSize.width + buildingSize.height - 2;
+            verticalPush = footprintDepth * h * 0.25;
+          } else {
+            // Single-tile sprites also need push (sprites have transparent bottom padding)
+            verticalPush = destHeight * 0.15;
+          }
+          drawY = drawPosY + h - destHeight + verticalPush;
+          
+          // #region agent log
+          const debugTypes = ['police_station', 'stadium', 'house_medium', 'house_small', 'water_tower', 'mansion', 'park_large', 'park'];
+          if (debugTypes.includes(buildingType)) {
+            fetch('http://127.0.0.1:7242/ingest/75839c3e-3c42-4523-859b-438c22b5f8b8',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Game.tsx:drawBuilding',message:'Draw with single+multi push',data:{buildingType,isMultiTile,destWidth,destHeight,drawX,drawY,drawPosY,verticalPush},timestamp:Date.now(),sessionId:'debug-session',runId:'single-push-fix'})}).catch(()=>{});
+          }
+          // #endregion
+          
+          // Draw the sprite with correct aspect ratio
+          ctx.drawImage(
+            spriteSheet,
+            coords.sx, coords.sy, coords.sw, coords.sh,  // Source: exact tile from sprite sheet
+            Math.round(drawX), Math.round(drawY),        // Destination position
+            Math.round(destWidth), Math.round(destHeight) // Destination size (preserving aspect ratio)
+          );
+        }
+      }
+    } else if (!USE_TILE_RENDERER) {
+      // ===== LEGACY INDIVIDUAL IMAGE PATH =====
+      // Keep all the per-building scaling and offset logic for backward compatibility
+      
+      // Get building size to handle multi-tile buildings
+      const buildingSize = getBuildingSize(buildingType);
+      const isMultiTile = buildingSize.width > 1 || buildingSize.height > 1;
+      
+      let drawPosX = x;
+      let drawPosY = y;
+      
+      if (isMultiTile) {
+        const frontmostOffsetX = buildingSize.width - 1;
+        const frontmostOffsetY = buildingSize.height - 1;
+        const screenOffsetX = (frontmostOffsetX - frontmostOffsetY) * (w / 2);
+        const screenOffsetY = (frontmostOffsetX + frontmostOffsetY) * (h / 2);
+        drawPosX = x + screenOffsetX;
+        drawPosY = y + screenOffsetY;
+      }
+      
+      let imageSrc: string | null = null;
+      let sizeMultiplier = 1.8;
+      
+      if (buildingType === 'house_medium') {
+        imageSrc = BUILDING_IMAGES.house_medium;
+        sizeMultiplier = 1.26;
+      } else if (buildingType === 'house_small') {
+        imageSrc = BUILDING_IMAGES.house_small;
+        sizeMultiplier = 1.26;
+      } else if (['apartment_low', 'apartment_high'].includes(buildingType)) {
+        imageSrc = BUILDING_IMAGES.residential;
+      } else if (buildingType === 'mansion') {
+        imageSrc = BUILDING_IMAGES.mansion;
+      } else if (buildingType === 'shop_medium') {
+        imageSrc = BUILDING_IMAGES.shop_medium;
+        sizeMultiplier = 1.44;
+      } else if (buildingType === 'shop_small') {
+        imageSrc = BUILDING_IMAGES.shop_small;
+        sizeMultiplier = 1.26;
+      } else if (['office_low', 'office_high', 'mall'].includes(buildingType)) {
+        imageSrc = BUILDING_IMAGES.commercial;
+      } else if (buildingType === 'warehouse') {
+        imageSrc = BUILDING_IMAGES.warehouse;
+      } else if (['factory_small', 'factory_medium', 'factory_large'].includes(buildingType)) {
+        imageSrc = BUILDING_IMAGES.industrial;
+      } else if (BUILDING_IMAGES[buildingType]) {
+        imageSrc = BUILDING_IMAGES[buildingType];
+        if (buildingType === 'power_plant') sizeMultiplier = 2.25;
+        else if (buildingType === 'stadium') sizeMultiplier = 2.8;
+        else if (buildingType === 'space_program') sizeMultiplier = 2.94;
+        else if (buildingType === 'university') sizeMultiplier = 2.8;
+        else if (buildingType === 'hospital') sizeMultiplier = 2.25;
+        else if (buildingType === 'school') sizeMultiplier = 2.25;
+        else if (buildingType === 'fire_station') sizeMultiplier = 1.006;
+        else if (buildingType === 'police_station') sizeMultiplier = 1.35;
+        else if (buildingType === 'park') sizeMultiplier = 1.134;
+        else if (buildingType === 'park_large') sizeMultiplier = 2.5;
+        else if (buildingType === 'tennis') sizeMultiplier = 1.197;
+      }
+      
+      if (imageSrc && imageCache.has(imageSrc)) {
+        const img = imageCache.get(imageSrc)!;
+        const imgHeight = w * sizeMultiplier;
+        const aspectRatio = img.width / img.height || 1;
+        const imgWidth = imgHeight * aspectRatio;
+        
+        const drawX = drawPosX + w / 2 - imgWidth / 2;
+        const baseY = isMultiTile ? drawPosY : y;
+        const footprintDepth = isMultiTile ? buildingSize.width + buildingSize.height - 2 : 0;
+        const verticalLift = footprintDepth > 0 ? footprintDepth * h * 0.3 : 0;
+        let drawY = baseY - imgHeight + h + imgHeight * 0.1 - verticalLift;
+        
+        if (buildingType === 'power_plant') drawY += h * 0.35;
+        if (buildingType === 'school') drawY += h * 0.4;
+        if (buildingType === 'stadium') drawY += h * 1.0;
+        if (buildingType === 'space_program') drawY += h * 1.0;
+        if (buildingType === 'park_large') drawY += h * 1.1;
+        if (buildingType === 'water_tower') drawY -= h * 0.1;
+        
         ctx.drawImage(
-          spriteSheet,
-          coords.sx, coords.sy, coords.sw, coords.sh, // Source rectangle
+          img,
           Math.round(drawX),
           Math.round(drawY),
           Math.round(imgWidth),
-          Math.round(imgHeight) // Destination rectangle
+          Math.round(imgHeight)
         );
       }
-    } else if (imageSrc && imageCache.has(imageSrc)) {
-      // Use individual image rendering
-      const img = imageCache.get(imageSrc)!;
-      
-      // Draw with crisp rendering
-      ctx.drawImage(
-        img,
-        Math.round(drawX),
-        Math.round(drawY),
-        Math.round(imgWidth),
-        Math.round(imgHeight)
-      );
     }
     
-    // Draw fire effect
+    // Draw fire effect (applies to both rendering modes)
     if (tile.building.onFire) {
-      const fireX = drawPosX + w / 2;
-      const fireY = drawPosY - 10;
+      const fireX = x + w / 2;
+      const fireY = y - 10;
       
-      // Outer glow
       ctx.fillStyle = 'rgba(255, 100, 0, 0.5)';
       ctx.beginPath();
       ctx.ellipse(fireX, fireY, 18, 25, 0, 0, Math.PI * 2);
       ctx.fill();
       
-      // Inner flame
       ctx.fillStyle = 'rgba(255, 200, 0, 0.8)';
       ctx.beginPath();
       ctx.ellipse(fireX, fireY + 5, 10, 15, 0, 0, Math.PI * 2);
       ctx.fill();
       
-      // Core
       ctx.fillStyle = 'rgba(255, 255, 200, 0.9)';
       ctx.beginPath();
       ctx.ellipse(fireX, fireY + 8, 5, 8, 0, 0, Math.PI * 2);
